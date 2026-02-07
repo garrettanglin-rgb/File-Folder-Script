@@ -20,6 +20,7 @@ from docx.shared import Inches, Pt, Twips, RGBColor
 
 from label_maker.config import (
     AVERY_TEMPLATE_PATH,
+    FIELD_MAPPING,
     NUMBERS_SPREADSHEET_PATH,
 )
 from label_maker.data_reader import clear_print_flags, read_flagged_rows
@@ -189,25 +190,27 @@ def _apply_line_format(paragraph, line_fmt, text):
         font.color.rgb = RGBColor.from_string(line_fmt["color_rgb"])
 
 
-def _populate_cell(cell, data_row, headers, line_formats):
+def _populate_cell(cell, data_row, line_formats, field_mapping):
     """Fill a single table cell with label data using the format profile.
 
-    *data_row* is a dict keyed by header name.  *headers* excludes the
-    print-flag column.  *line_formats* is the list from the profile's
-    ``format_template.line_formats``.
+    *data_row* is a dict keyed by header name.  *field_mapping* is an
+    ordered dict mapping 1-based line numbers to spreadsheet column
+    names (from ``config.FIELD_MAPPING``).  *line_formats* comes from
+    the profile's ``format_template.line_formats``.
 
-    The template has N lines per label.  We map the first N non-flag
-    columns to those lines in order.
+    Each mapped line gets the formatting of the corresponding template
+    line.  If the template has fewer line_formats than the mapping, the
+    last available format is reused.
     """
-    # Columns to render (skip the flag column — already filtered out)
-    data_keys = [h for h in headers if h.strip().lower() not in ("print", "new")]
+    sorted_lines = sorted(field_mapping.items())  # [(1, "File Number"), ...]
 
-    # Use the first paragraph that already exists, then add new ones
-    for li, fmt in enumerate(line_formats):
-        if li < len(data_keys):
-            text = data_row.get(data_keys[li], "")
-        else:
-            text = ""
+    for li, (line_num, column_name) in enumerate(sorted_lines):
+        text = data_row.get(column_name, "")
+        # Pick the matching template line format; fall back to the last
+        # one if the mapping has more lines than the template defined.
+        fmt_index = min(li, len(line_formats) - 1)
+        fmt = line_formats[fmt_index]
+
         if li == 0:
             para = cell.paragraphs[0]
         else:
@@ -246,7 +249,8 @@ def _build_page_table(doc, profile, section):
     return table
 
 
-def generate(profile_path=None, spreadsheet_path=None, output_path=None):
+def generate(profile_path=None, spreadsheet_path=None, output_path=None,
+             field_mapping=None):
     """Run the full label-generation pipeline.
 
     Parameters
@@ -257,6 +261,9 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None):
         Path to the .numbers file.  Defaults to ``NUMBERS_SPREADSHEET_PATH``.
     output_path : str or Path, optional
         Where to save the generated .docx.  Defaults to ``OUTPUT_PATH``.
+    field_mapping : dict, optional
+        ``{line_number: column_name}`` mapping.  Defaults to
+        ``config.FIELD_MAPPING``.
 
     Returns
     -------
@@ -267,6 +274,8 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None):
     profile_path = Path(profile_path or PROFILE_PATH)
     spreadsheet_path = Path(spreadsheet_path or NUMBERS_SPREADSHEET_PATH)
     output_path = Path(output_path or OUTPUT_PATH)
+    if field_mapping is None:
+        field_mapping = FIELD_MAPPING
 
     # 1. Load the formatting profile
     profile = load_profile(profile_path)
@@ -281,6 +290,15 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None):
     if not rows:
         print("No new labels to print.")
         return None
+
+    # Validate that every mapped column exists in the spreadsheet
+    mapped_cols = set(field_mapping.values())
+    missing = mapped_cols - set(headers)
+    if missing:
+        raise ValueError(
+            f"FIELD_MAPPING references columns not found in the spreadsheet: "
+            f"{sorted(missing)}.  Available headers: {headers}"
+        )
 
     print(f"Found {len(rows)} label(s) to print.")
 
@@ -328,8 +346,8 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None):
                     _populate_cell(
                         table.rows[ri].cells[ci],
                         rows[row_cursor],
-                        headers,
                         fmt["line_formats"],
+                        field_mapping,
                     )
                     row_cursor += 1
                 # else: cell stays empty (blank label)
