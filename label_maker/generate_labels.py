@@ -231,25 +231,32 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
 # ---------------------------------------------------------------------------
 
 def _clear_label_cells(table, label_row_indices, label_col_indices):
-    """Remove all content from label cells, leaving one empty paragraph each."""
-    for ri in label_row_indices:
-        for ci in label_col_indices:
-            cell = table.rows[ri].cells[ci]
-            # Pin text to the top of the cell (removes vertical centering gap)
-            cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-            # Zero out any internal cell top margin via XML
-            tcPr = cell._tc.get_or_add_tcPr()
-            tcMar = tcPr.find(qn("w:tcMar"))
-            if tcMar is not None:
-                top_el = tcMar.find(qn("w:top"))
-                if top_el is not None:
-                    top_el.set(qn("w:w"), "0")
+    """Remove all content from every cell in the table.
+
+    Vertical alignment is pinned to TOP and the top margin is zeroed
+    only for actual label cells.
+    """
+    label_row_set = set(label_row_indices)
+    label_col_set = set(label_col_indices)
+
+    for ri, row in enumerate(table.rows):
+        for ci, cell in enumerate(row.cells):
             # Remove extra paragraphs, keep only the first
             for p in cell.paragraphs[1:]:
                 p._element.getparent().remove(p._element)
             # Clear the remaining paragraph's content
             if cell.paragraphs:
                 cell.paragraphs[0].clear()
+
+            # Only tweak alignment/margins on actual label cells
+            if ri in label_row_set and ci in label_col_set:
+                cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+                tcPr = cell._tc.get_or_add_tcPr()
+                tcMar = tcPr.find(qn("w:tcMar"))
+                if tcMar is not None:
+                    top_el = tcMar.find(qn("w:top"))
+                    if top_el is not None:
+                        top_el.set(qn("w:w"), "0")
 
 
 def _clone_table_with_page_break(doc, source_table):
@@ -323,8 +330,15 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
     if field_mapping is None:
         field_mapping = FIELD_MAPPING
 
-    # 1. Load the formatting profile
-    profile = load_profile(profile_path)
+    # 1. Load the formatting profile (re-analyze if template is newer)
+    from label_maker.template_analyzer import analyze_template, save_profile
+    if (not profile_path.exists()
+            or AVERY_TEMPLATE_PATH.stat().st_mtime > profile_path.stat().st_mtime):
+        print("Analyzing template (new or updated)...")
+        profile = analyze_template(AVERY_TEMPLATE_PATH)
+        save_profile(profile, profile_path)
+    else:
+        profile = load_profile(profile_path)
     grid = profile["grid"]
     fmt = profile["format_template"]
     labels_per_page = grid["labels_per_page"]

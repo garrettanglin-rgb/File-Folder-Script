@@ -31,8 +31,9 @@ FIELD_MAPPING = {
 # Only properties listed here are overridden; everything else comes from the template.
 # ---------------------------------------------------------------------------
 LINE_FORMAT_OVERRIDE = {
-    1: {"bold": True},     # Client + File Number — bold
-    2: {"bold": False},    # Case — not bold
+    1: {"font_name": "Times New Roman", "font_size_pt": 12, "bold": True},
+    2: {"font_name": "Times New Roman", "font_size_pt": 12, "bold": False},
+    3: {"font_name": "Times New Roman", "font_size_pt": 12, "bold": False},
 }
 
 # ---------------------------------------------------------------------------
