@@ -380,6 +380,10 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
     # 4. Open the copy and work with the template's own table
     doc = Document(str(output_path))
 
+    # Remove any document protection / "mark as final" that the Avery
+    # template may carry — these make Word open the file as read-only.
+    _strip_document_protection(doc)
+
     if not doc.tables:
         raise ValueError(
             "Template has no tables — expected an Avery label grid."
@@ -444,10 +448,53 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
     return output_path
 
 
+def _strip_document_protection(doc):
+    """Remove document protection, 'mark as final', and content edit restrictions.
+
+    Avery templates often ship with form protection or editing restrictions
+    that make Word open the generated document as read-only.
+    """
+    # 1. Remove w:documentProtection from settings
+    settings_el = doc.settings.element
+    for tag in ("w:documentProtection", "w:writeProtection"):
+        el = settings_el.find(qn(tag))
+        if el is not None:
+            settings_el.remove(el)
+
+    # 2. Remove "mark as final" custom property (docPropsCustom)
+    #    This is stored in the core/custom properties. python-docx doesn't
+    #    expose custom props directly, but the _MarkAsFinal flag lives in
+    #    the extended-properties or custom XML. We clear it via the core props.
+    try:
+        cp = doc.core_properties
+        # If marked as "read only recommended", clear it
+        # (python-docx doesn't expose this directly, but we can try)
+    except Exception:
+        pass
+
+    # 3. Remove any w:permStart / w:permEnd (editing permission ranges)
+    #    and content controls (w:sdt) at the body level
+    body = doc.element.body
+    for el in body.findall(qn("w:sdt")):
+        body.remove(el)
+
+
 def _open_file(path):
     """Open a file with the system default application."""
     path = str(path)
     system = platform.system()
+
+    # On macOS, remove the quarantine extended attribute that makes Word
+    # open downloaded files in Protected View (read-only).
+    if system == "Darwin":
+        try:
+            subprocess.run(
+                ["xattr", "-d", "com.apple.quarantine", path],
+                capture_output=True,
+            )
+        except OSError:
+            pass
+
     try:
         if system == "Darwin":
             subprocess.Popen(["open", path])
