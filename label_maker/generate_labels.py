@@ -259,7 +259,7 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
     """
     # Fallback format if the template had no detectable line styles
     _DEFAULT_FMT = {
-        "font_name": "Arial", "font_size_pt": 10.0,
+        "font_name": "Times New Roman", "font_size_pt": 12.0,
         "bold": False, "italic": False, "underline": False,
         "alignment": "left", "line_spacing_rule": "single",
         "line_spacing_value": 1.0, "space_before_pt": 0.0,
@@ -291,40 +291,73 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
 
 
 def _build_page_table(doc, profile, section):
-    """Create and return a single-page label table matching the profile."""
+    """Create and return a single-page label table matching the profile.
+
+    Replicates the exact physical table from the template, including any
+    gutter columns and spacer rows, so the output matches the original
+    Avery sheet layout precisely.
+    """
     grid = profile["grid"]
-    num_rows = grid["num_rows"]
-    num_cols = grid["num_cols"]
+    num_rows = grid["num_rows"]       # physical rows (incl. spacers)
+    num_cols = grid["num_cols"]       # physical cols (incl. gutters)
+    cell_info = profile.get("cell", {})
+    page = profile["page"]
 
+    # --- Per-column widths from template XML, or uniform fallback ---
+    col_widths = cell_info.get("col_widths_twips", [])
+    if not col_widths or len(col_widths) != num_cols:
+        avail_w = int((page["page_width_in"] - page["margin_left_in"]
+                       - page["margin_right_in"]) * 1440)
+        col_widths = [avail_w // num_cols] * num_cols
+
+    # --- Per-row heights from template XML, or uniform fallback ---
+    all_row_heights = cell_info.get("all_row_heights_twips", [])
+    if not all_row_heights or len(all_row_heights) != num_rows:
+        avail_h = int((page["page_height_in"] - page["margin_top_in"]
+                       - page["margin_bottom_in"]) * 1440)
+        all_row_heights = [avail_h // num_rows] * num_rows
+
+    # --- Create the physical table ---
     table = doc.add_table(rows=num_rows, cols=num_cols)
-
-    # Table-level properties
     _hide_table_borders(table)
     _set_fixed_layout(table)
     _center_table(table)
+    _set_grid_cols(table, col_widths)
 
-    # Column widths from the original template (twips / "dxa")
-    col_width = profile.get("cell", {}).get("col_width_twips", 5126)
-    _set_grid_cols(table, [col_width] * num_cols)
-
-    # Row heights + cell properties
-    row_height = profile.get("cell", {}).get("row_height_twips", 1915)
-    cell_margin_lr = profile.get("cell", {}).get("margin_left_twips", 144)
+    # --- Cell margins ---
+    margin_l = cell_info.get("margin_left_twips") or 115
+    margin_r = cell_info.get("margin_right_twips") or 115
+    margin_t = cell_info.get("margin_top_twips") or 0
+    margin_b = cell_info.get("margin_bottom_twips") or 0
     cell_margins = {
-        "top": profile.get("cell", {}).get("margin_top_twips", 86),
-        "bottom": profile.get("cell", {}).get("margin_bottom_twips", 86),
-        "left": cell_margin_lr,
-        "right": profile.get("cell", {}).get("margin_right_twips", 144),
+        "top": margin_t, "bottom": margin_b,
+        "left": margin_l, "right": margin_r,
     }
 
-    for ri, row in enumerate(table.rows):
-        _set_row_height(row, row_height)
-        for ci, cell in enumerate(row.cells):
-            cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-            _set_cell_margins(cell, **cell_margins)
-            _set_cell_width(cell, col_width)
+    label_col_set = set(grid.get("label_col_indices", list(range(num_cols))))
+    label_row_set = set(grid.get("label_row_indices", list(range(num_rows))))
 
-    return table, col_width, cell_margin_lr
+    for ri, row in enumerate(table.rows):
+        h = all_row_heights[ri] if ri < len(all_row_heights) else None
+        if h is not None:
+            _set_row_height(row, h)
+        for ci, cell_obj in enumerate(row.cells):
+            w = col_widths[ci] if ci < len(col_widths) else col_widths[0]
+            _set_cell_width(cell_obj, w)
+            # Only apply label formatting to actual label cells
+            if ri in label_row_set and ci in label_col_set:
+                cell_obj.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                _set_cell_margins(cell_obj, **cell_margins)
+
+    # The label column width (for tab-stop calculation)
+    label_col_indices = grid.get("label_col_indices", list(range(num_cols)))
+    label_col_width = (
+        col_widths[label_col_indices[0]]
+        if label_col_indices and label_col_indices[0] < len(col_widths)
+        else col_widths[0]
+    )
+
+    return table, label_col_width, margin_l
 
 
 def generate(profile_path=None, spreadsheet_path=None, output_path=None,
@@ -397,6 +430,12 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
         p = doc.paragraphs[0]._element
         p.getparent().remove(p)
 
+    # Which physical rows/cols hold actual labels
+    label_row_indices = grid.get(
+        "label_row_indices", list(range(grid["num_rows"])))
+    label_col_indices = grid.get(
+        "label_col_indices", list(range(grid["num_cols"])))
+
     # Determine how many pages we need
     total_pages = math.ceil(len(rows) / labels_per_page)
 
@@ -415,19 +454,19 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
         else:
             current_section = section
 
-        table, col_width, cell_margin_lr = _build_page_table(
+        table, label_col_width, cell_margin_lr = _build_page_table(
             doc, profile, current_section)
 
-        # Fill cells with data
-        for ri in range(grid["num_rows"]):
-            for ci in range(grid["num_cols"]):
+        # Fill only the label cells (skip gutter cols & spacer rows)
+        for ri in label_row_indices:
+            for ci in label_col_indices:
                 if row_cursor < len(rows):
                     _populate_cell(
                         table.rows[ri].cells[ci],
                         rows[row_cursor],
                         fmt["line_formats"],
                         field_mapping,
-                        col_width,
+                        label_col_width,
                         cell_margin_lr,
                     )
                     row_cursor += 1
@@ -436,7 +475,8 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
     # 4. Save the document
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
-    print(f"Saved {len(rows)} label(s) across {total_pages} page(s) to {output_path}")
+    print(f"Saved {len(rows)} label(s) across {total_pages} page(s) "
+          f"to {output_path}")
 
     # 5. Clear the print flags so they don't print again
     clear_print_flags(spreadsheet_path, indices)
