@@ -233,10 +233,10 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
 def _clear_label_cells(table, label_row_indices, label_col_indices):
     """Remove all content from every cell in the table.
 
-    Keeps the first paragraph element (preserving its pPr so Word treats
-    it as a normal editable paragraph), but strips all runs and content
-    from it.  Removes every other child element (extra paragraphs, SDTs,
-    bookmarks, etc.) except tcPr.
+    Strips every child element from each <w:tc> except <w:tcPr>, then
+    adds back a single clean paragraph (<w:p> with an empty <w:pPr>).
+    This guarantees no template text, styles, or inherited formatting
+    survive, while giving Word a structurally valid paragraph to work with.
 
     Vertical alignment is pinned to TOP and the top margin is zeroed
     only for actual label cells.
@@ -247,23 +247,15 @@ def _clear_label_cells(table, label_row_indices, label_col_indices):
     for ri, row in enumerate(table.rows):
         for ci, cell in enumerate(row.cells):
             tc = cell._tc
-            first_p = None
+            # Remove ALL children except tcPr (cell dimensions/borders)
             for child in list(tc):
-                if child.tag == qn("w:tcPr"):
-                    continue  # always keep cell properties
-                if child.tag == qn("w:p") and first_p is None:
-                    # Keep the first paragraph but gut its content
-                    first_p = child
-                    for p_child in list(first_p):
-                        if p_child.tag != qn("w:pPr"):
-                            first_p.remove(p_child)
-                    continue
-                # Remove everything else (extra paragraphs, SDTs, etc.)
-                tc.remove(child)
-
-            # Safety: if template cell had no paragraphs, add one
-            if first_p is None:
-                tc.append(OxmlElement("w:p"))
+                if child.tag != qn("w:tcPr"):
+                    tc.remove(child)
+            # Add back a clean, empty paragraph with a pPr element
+            # so Word treats it as a proper editable paragraph.
+            p = OxmlElement("w:p")
+            p.append(OxmlElement("w:pPr"))
+            tc.append(p)
 
             # Only tweak alignment/margins on actual label cells
             if ri in label_row_set and ci in label_col_set:
