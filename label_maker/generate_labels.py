@@ -507,7 +507,30 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
             label_col_width, cell_margin_lr,
         )
 
-    # 5. Save the document
+    # 5. Shrink the trailing paragraph Word adds after the last table
+    #    so it doesn't push a blank second page.
+    trailing_paras = body.findall(qn("w:p"))
+    if trailing_paras:
+        last_p = trailing_paras[-1]
+        pPr = last_p.find(qn("w:pPr"))
+        if pPr is None:
+            pPr = OxmlElement("w:pPr")
+            last_p.insert(0, pPr)
+        # Tiny font size (1 half-point = 0.5pt)
+        rPr = OxmlElement("w:rPr")
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), "1")
+        rPr.append(sz)
+        pPr.append(rPr)
+        # Zero spacing
+        spacing = OxmlElement("w:spacing")
+        spacing.set(qn("w:before"), "0")
+        spacing.set(qn("w:after"), "0")
+        spacing.set(qn("w:line"), "1")
+        spacing.set(qn("w:lineRule"), "exact")
+        pPr.append(spacing)
+
+    # 6. Save the document
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
     print(f"Saved {len(rows)} label(s) across {total_pages} page(s) "
