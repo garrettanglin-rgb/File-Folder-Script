@@ -1,14 +1,16 @@
 """Generate a print-ready Avery label document from spreadsheet data.
 
-Reads the formatting profile (label_format.json), pulls flagged rows
-from the Numbers spreadsheet, builds a new Word document that replicates
-the exact Avery grid layout and formatting, and opens the result.
+Copies the original Avery template and fills label cells with data,
+preserving exact page layout, table dimensions, margins, and positioning
+so the output aligns perfectly with physical label sheets.
 """
 
 import math
 import platform
+import shutil
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 from docx import Document
@@ -17,6 +19,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, Twips, RGBColor
+from docx.table import Table
 
 from label_maker.config import (
     AVERY_TEMPLATE_PATH,
@@ -56,106 +59,7 @@ _SPACING_RULE_MAP = {
 
 
 # ---------------------------------------------------------------------------
-# Low-level XML helpers (python-docx doesn't expose every property)
-# ---------------------------------------------------------------------------
-
-def _set_row_height(row, height_twips):
-    """Set an exact row height via the underlying XML."""
-    trPr = row._tr.get_or_add_trPr()
-    trHeight = trPr.find(qn("w:trHeight"))
-    if trHeight is None:
-        trHeight = OxmlElement("w:trHeight")
-        trPr.append(trHeight)
-    trHeight.set(qn("w:val"), str(height_twips))
-    trHeight.set(qn("w:hRule"), "exact")
-
-
-def _set_cell_margins(cell, top=0, bottom=0, left=0, right=0):
-    """Set per-cell margins (in twips) via tcMar XML."""
-    tcPr = cell._tc.get_or_add_tcPr()
-    tcMar = tcPr.find(qn("w:tcMar"))
-    if tcMar is None:
-        tcMar = OxmlElement("w:tcMar")
-        tcPr.append(tcMar)
-    for side, val in [("top", top), ("bottom", bottom),
-                      ("left", left), ("right", right)]:
-        el = tcMar.find(qn(f"w:{side}"))
-        if el is None:
-            el = OxmlElement(f"w:{side}")
-            tcMar.append(el)
-        el.set(qn("w:w"), str(val))
-        el.set(qn("w:type"), "dxa")
-
-
-def _set_cell_width(cell, width_twips):
-    """Set the preferred cell width in twips."""
-    tcPr = cell._tc.get_or_add_tcPr()
-    tcW = tcPr.find(qn("w:tcW"))
-    if tcW is None:
-        tcW = OxmlElement("w:tcW")
-        tcPr.append(tcW)
-    tcW.set(qn("w:w"), str(width_twips))
-    tcW.set(qn("w:type"), "dxa")
-
-
-def _hide_table_borders(table):
-    """Remove all borders from the table (invisible grid)."""
-    tblPr = table._tbl.tblPr
-    if tblPr is None:
-        tblPr = OxmlElement("w:tblPr")
-        table._tbl.insert(0, tblPr)
-    borders = tblPr.find(qn("w:tblBorders"))
-    if borders is None:
-        borders = OxmlElement("w:tblBorders")
-        tblPr.append(borders)
-    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        el = borders.find(qn(f"w:{edge}"))
-        if el is None:
-            el = OxmlElement(f"w:{edge}")
-            borders.append(el)
-        el.set(qn("w:val"), "none")
-        el.set(qn("w:sz"), "0")
-        el.set(qn("w:space"), "0")
-        el.set(qn("w:color"), "auto")
-
-
-def _set_fixed_layout(table):
-    """Force fixed table layout so column widths are respected."""
-    tblPr = table._tbl.tblPr
-    layout = tblPr.find(qn("w:tblLayout"))
-    if layout is None:
-        layout = OxmlElement("w:tblLayout")
-        tblPr.append(layout)
-    layout.set(qn("w:type"), "fixed")
-
-
-def _center_table(table):
-    """Centre the table horizontally on the page."""
-    tblPr = table._tbl.tblPr
-    jc = tblPr.find(qn("w:jc"))
-    if jc is None:
-        jc = OxmlElement("w:jc")
-        tblPr.append(jc)
-    jc.set(qn("w:val"), "center")
-
-
-def _set_grid_cols(table, col_widths_twips):
-    """Write explicit <w:tblGrid><w:gridCol> entries."""
-    tblGrid = table._tbl.find(qn("w:tblGrid"))
-    if tblGrid is None:
-        tblGrid = OxmlElement("w:tblGrid")
-        table._tbl.insert(1, tblGrid)
-    # Clear existing gridCols
-    for gc in list(tblGrid.findall(qn("w:gridCol"))):
-        tblGrid.remove(gc)
-    for w in col_widths_twips:
-        gc = OxmlElement("w:gridCol")
-        gc.set(qn("w:w"), str(w))
-        tblGrid.append(gc)
-
-
-# ---------------------------------------------------------------------------
-# Core document-building logic
+# Text formatting helpers
 # ---------------------------------------------------------------------------
 
 def _set_paragraph_spacing(paragraph, line_fmt):
@@ -322,79 +226,69 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
             )
 
 
-def _build_page_table(doc, profile, section):
-    """Create and return a single-page label table matching the profile.
+# ---------------------------------------------------------------------------
+# Template-based document generation
+# ---------------------------------------------------------------------------
 
-    Replicates the exact physical table from the template, including any
-    gutter columns and spacer rows, so the output matches the original
-    Avery sheet layout precisely.
-    """
-    grid = profile["grid"]
-    num_rows = grid["num_rows"]       # physical rows (incl. spacers)
-    num_cols = grid["num_cols"]       # physical cols (incl. gutters)
-    cell_info = profile.get("cell", {})
-    page = profile["page"]
+def _clear_label_cells(table, label_row_indices, label_col_indices):
+    """Remove all content from label cells, leaving one empty paragraph each."""
+    for ri in label_row_indices:
+        for ci in label_col_indices:
+            cell = table.rows[ri].cells[ci]
+            # Remove extra paragraphs, keep only the first
+            for p in cell.paragraphs[1:]:
+                p._element.getparent().remove(p._element)
+            # Clear the remaining paragraph's content
+            if cell.paragraphs:
+                cell.paragraphs[0].clear()
 
-    # --- Per-column widths from template XML, or uniform fallback ---
-    col_widths = cell_info.get("col_widths_twips", [])
-    if not col_widths or len(col_widths) != num_cols:
-        avail_w = int((page["page_width_in"] - page["margin_left_in"]
-                       - page["margin_right_in"]) * 1440)
-        col_widths = [avail_w // num_cols] * num_cols
 
-    # --- Per-row heights from template XML, or uniform fallback ---
-    all_row_heights = cell_info.get("all_row_heights_twips", [])
-    if not all_row_heights or len(all_row_heights) != num_rows:
-        avail_h = int((page["page_height_in"] - page["margin_top_in"]
-                       - page["margin_bottom_in"]) * 1440)
-        all_row_heights = [avail_h // num_rows] * num_rows
+def _clone_table_with_page_break(doc, source_table):
+    """Deep-copy a table and append it after a page-break paragraph."""
+    # Page break
+    p_el = OxmlElement("w:p")
+    r_el = OxmlElement("w:r")
+    br_el = OxmlElement("w:br")
+    br_el.set(qn("w:type"), "page")
+    r_el.append(br_el)
+    p_el.append(r_el)
+    doc.element.body.append(p_el)
 
-    # --- Create the physical table ---
-    table = doc.add_table(rows=num_rows, cols=num_cols)
-    _hide_table_borders(table)
-    _set_fixed_layout(table)
-    _center_table(table)
-    _set_grid_cols(table, col_widths)
+    # Clone the table XML (preserves every dimension exactly)
+    new_tbl = deepcopy(source_table._tbl)
+    doc.element.body.append(new_tbl)
 
-    # --- Cell margins ---
-    margin_l = cell_info.get("margin_left_twips") or 115
-    margin_r = cell_info.get("margin_right_twips") or 115
-    margin_t = cell_info.get("margin_top_twips") or 0
-    margin_b = cell_info.get("margin_bottom_twips") or 0
-    cell_margins = {
-        "top": margin_t, "bottom": margin_b,
-        "left": margin_l, "right": margin_r,
-    }
+    return Table(new_tbl, doc)
 
-    label_col_set = set(grid.get("label_col_indices", list(range(num_cols))))
-    label_row_set = set(grid.get("label_row_indices", list(range(num_rows))))
 
-    for ri, row in enumerate(table.rows):
-        h = all_row_heights[ri] if ri < len(all_row_heights) else None
-        if h is not None:
-            _set_row_height(row, h)
-        for ci, cell_obj in enumerate(row.cells):
-            w = col_widths[ci] if ci < len(col_widths) else col_widths[0]
-            _set_cell_width(cell_obj, w)
-            # Only apply label formatting to actual label cells
-            if ri in label_row_set and ci in label_col_set:
-                cell_obj.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-                _set_cell_margins(cell_obj, **cell_margins)
-
-    # The label column width (for tab-stop calculation)
-    label_col_indices = grid.get("label_col_indices", list(range(num_cols)))
-    label_col_width = (
-        col_widths[label_col_indices[0]]
-        if label_col_indices and label_col_indices[0] < len(col_widths)
-        else col_widths[0]
-    )
-
-    return table, label_col_width, margin_l
+def _fill_page_cells(table, data_rows, row_cursor,
+                     label_row_indices, label_col_indices,
+                     line_formats, field_mapping,
+                     label_col_width, cell_margin_lr):
+    """Fill label cells on one page, returning the updated row cursor."""
+    for ri in label_row_indices:
+        for ci in label_col_indices:
+            if row_cursor < len(data_rows):
+                _populate_cell(
+                    table.rows[ri].cells[ci],
+                    data_rows[row_cursor],
+                    line_formats,
+                    field_mapping,
+                    label_col_width,
+                    cell_margin_lr,
+                )
+                row_cursor += 1
+    return row_cursor
 
 
 def generate(profile_path=None, spreadsheet_path=None, output_path=None,
              field_mapping=None):
     """Run the full label-generation pipeline.
+
+    Instead of building a document from scratch, this copies the original
+    Avery template so that every table dimension, margin, and positioning
+    property is preserved exactly.  Label cells are cleared and filled
+    with spreadsheet data.
 
     Parameters
     ----------
@@ -422,7 +316,6 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
 
     # 1. Load the formatting profile
     profile = load_profile(profile_path)
-    page = profile["page"]
     grid = profile["grid"]
     fmt = profile["format_template"]
     labels_per_page = grid["labels_per_page"]
@@ -445,22 +338,22 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
 
     print(f"Found {len(rows)} label(s) to print.")
 
-    # 3. Build the Word document
-    doc = Document()
+    # 3. Copy the Avery template to the output location.
+    #    This preserves every page margin, table dimension, cell size,
+    #    row height, and column width from the original template exactly.
+    template_path = AVERY_TEMPLATE_PATH
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(template_path), str(output_path))
 
-    # Page setup matching the template
-    section = doc.sections[0]
-    section.page_width = Inches(page["page_width_in"])
-    section.page_height = Inches(page["page_height_in"])
-    section.top_margin = Inches(page["margin_top_in"])
-    section.bottom_margin = Inches(page["margin_bottom_in"])
-    section.left_margin = Inches(page["margin_left_in"])
-    section.right_margin = Inches(page["margin_right_in"])
+    # 4. Open the copy and work with the template's own table
+    doc = Document(str(output_path))
 
-    # Remove the empty default paragraph
-    if doc.paragraphs:
-        p = doc.paragraphs[0]._element
-        p.getparent().remove(p)
+    if not doc.tables:
+        raise ValueError(
+            "Template has no tables — expected an Avery label grid."
+        )
+
+    base_table = doc.tables[0]
 
     # Which physical rows/cols hold actual labels
     label_row_indices = grid.get(
@@ -468,52 +361,52 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
     label_col_indices = grid.get(
         "label_col_indices", list(range(grid["num_cols"])))
 
-    # Determine how many pages we need
+    # Cell width for the right-aligned tab stop calculation
+    cell_info = profile.get("cell", {})
+    col_widths = cell_info.get("col_widths_twips", [])
+    label_col_width = (
+        col_widths[label_col_indices[0]]
+        if col_widths and label_col_indices
+        and label_col_indices[0] < len(col_widths)
+        else 5000
+    )
+    cell_margin_lr = cell_info.get("margin_left_twips") or 115
+
+    # Clear any sample content from the template's label cells
+    _clear_label_cells(base_table, label_row_indices, label_col_indices)
+
+    # 5. Fill pages with data
     total_pages = math.ceil(len(rows) / labels_per_page)
-
     row_cursor = 0
-    for page_num in range(total_pages):
-        if page_num > 0:
-            # Add a section break for a new page
-            new_section = doc.add_section()
-            new_section.page_width = section.page_width
-            new_section.page_height = section.page_height
-            new_section.top_margin = section.top_margin
-            new_section.bottom_margin = section.bottom_margin
-            new_section.left_margin = section.left_margin
-            new_section.right_margin = section.right_margin
-            current_section = new_section
-        else:
-            current_section = section
 
-        table, label_col_width, cell_margin_lr = _build_page_table(
-            doc, profile, current_section)
+    # First page — use the template's own table (exact dimensions)
+    row_cursor = _fill_page_cells(
+        base_table, rows, row_cursor,
+        label_row_indices, label_col_indices,
+        fmt["line_formats"], field_mapping,
+        label_col_width, cell_margin_lr,
+    )
 
-        # Fill only the label cells (skip gutter cols & spacer rows)
-        for ri in label_row_indices:
-            for ci in label_col_indices:
-                if row_cursor < len(rows):
-                    _populate_cell(
-                        table.rows[ri].cells[ci],
-                        rows[row_cursor],
-                        fmt["line_formats"],
-                        field_mapping,
-                        label_col_width,
-                        cell_margin_lr,
-                    )
-                    row_cursor += 1
-                # else: cell stays empty (blank label)
+    # Additional pages — clone the template table
+    for _ in range(1, total_pages):
+        new_table = _clone_table_with_page_break(doc, base_table)
+        _clear_label_cells(new_table, label_row_indices, label_col_indices)
+        row_cursor = _fill_page_cells(
+            new_table, rows, row_cursor,
+            label_row_indices, label_col_indices,
+            fmt["line_formats"], field_mapping,
+            label_col_width, cell_margin_lr,
+        )
 
-    # 4. Save the document
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # 6. Save the document
     doc.save(str(output_path))
     print(f"Saved {len(rows)} label(s) across {total_pages} page(s) "
           f"to {output_path}")
 
-    # 5. Clear the print flags so they don't print again
+    # 7. Clear the print flags so they don't print again
     clear_print_flags(spreadsheet_path, indices)
 
-    # 6. Open the document
+    # 8. Open the document
     _open_file(output_path)
 
     return output_path
