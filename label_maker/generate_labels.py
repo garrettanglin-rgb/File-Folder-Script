@@ -1,16 +1,16 @@
 """Generate a print-ready Avery label document from spreadsheet data.
 
-Copies the original Avery template and fills label cells with data,
-preserving exact page layout, table dimensions, margins, and positioning
-so the output aligns perfectly with physical label sheets.
+Builds a new Word document from scratch, using exact dimensions extracted
+from the Avery template profile (page size, margins, column widths, row
+heights, cell margins).  This avoids any template-level baggage (document
+protection, floating shapes, content controls) that can make the output
+non-editable.
 """
 
 import math
 import platform
-import shutil
 import subprocess
 import sys
-from copy import deepcopy
 from pathlib import Path
 
 from docx import Document
@@ -19,7 +19,6 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, Twips, RGBColor
-from docx.table import Table
 
 from label_maker.config import (
     AVERY_TEMPLATE_PATH,
@@ -94,6 +93,13 @@ def _format_run(run, line_fmt):
     font = run.font
     # Always set font name — fall back to Times New Roman if not detected
     font.name = line_fmt.get("font_name") or "Times New Roman"
+    # Also set hAnsi so Word uses the same font for Latin characters
+    r = run._r
+    rPr = r.find(qn("w:rPr"))
+    if rPr is not None:
+        rFonts = rPr.find(qn("w:rFonts"))
+        if rFonts is not None:
+            rFonts.set(qn("w:hAnsi"), font.name)
     # Always set font size — fall back to 12pt if not detected
     size = line_fmt.get("font_size_pt")
     font.size = Pt(size) if size else Pt(12)
@@ -227,63 +233,137 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
 
 
 # ---------------------------------------------------------------------------
-# Template-based document generation
+# Build document from scratch using profile dimensions
 # ---------------------------------------------------------------------------
 
-def _clear_label_cells(table, label_row_indices, label_col_indices):
-    """Remove all content from every cell in the table.
+def _build_page_table(doc, profile):
+    """Create a table matching the Avery template's exact dimensions.
 
-    Strips every child element from each <w:tc> except <w:tcPr>, then
-    adds back a single clean paragraph (<w:p> with an empty <w:pPr>).
-    This guarantees no template text, styles, or inherited formatting
-    survive, while giving Word a structurally valid paragraph to work with.
+    Reads column widths, row heights, and cell margins from the profile
+    and applies them via XML so the printed output aligns with the
+    physical label sheet.
 
-    Vertical alignment is pinned to TOP and the top margin is zeroed
-    only for actual label cells.
+    Returns (table, label_row_indices, label_col_indices).
     """
+    grid = profile["grid"]
+    cell_info = profile.get("cell", {})
+    num_rows = grid["num_rows"]
+    num_cols = grid["num_cols"]
+    label_row_indices = grid.get("label_row_indices", list(range(num_rows)))
+    label_col_indices = grid.get("label_col_indices", list(range(num_cols)))
+
+    col_widths = cell_info.get("col_widths_twips", [])
+    all_row_heights = cell_info.get("all_row_heights_twips",
+                                     cell_info.get("row_heights_twips", []))
+    margin_top = cell_info.get("margin_top_twips")
+    margin_bottom = cell_info.get("margin_bottom_twips")
+    margin_left = cell_info.get("margin_left_twips")
+    margin_right = cell_info.get("margin_right_twips")
+
+    # Create the table
+    table = doc.add_table(rows=num_rows, cols=num_cols)
+    table.autofit = False
+    tbl = table._tbl
+
+    # Remove default borders (Avery labels typically have no visible borders)
+    tblPr = tbl.find(qn("w:tblPr"))
+    if tblPr is None:
+        tblPr = OxmlElement("w:tblPr")
+        tbl.insert(0, tblPr)
+
+    # Set table width to the sum of column widths
+    total_width = sum(col_widths) if col_widths else num_cols * 5000
+    tblW = tblPr.find(qn("w:tblW"))
+    if tblW is None:
+        tblW = OxmlElement("w:tblW")
+        tblPr.append(tblW)
+    tblW.set(qn("w:w"), str(total_width))
+    tblW.set(qn("w:type"), "dxa")
+
+    # Set table layout to fixed
+    tblLayout = OxmlElement("w:tblLayout")
+    tblLayout.set(qn("w:type"), "fixed")
+    tblPr.append(tblLayout)
+
+    # Set table-level cell margins
+    if any(v is not None for v in [margin_top, margin_bottom,
+                                    margin_left, margin_right]):
+        tblCellMar = OxmlElement("w:tblCellMar")
+        for side, val in [("top", margin_top), ("bottom", margin_bottom),
+                          ("left", margin_left), ("right", margin_right)]:
+            if val is not None:
+                el = OxmlElement(f"w:{side}")
+                el.set(qn("w:w"), str(val))
+                el.set(qn("w:type"), "dxa")
+                tblCellMar.append(el)
+        tblPr.append(tblCellMar)
+
+    # Remove all borders
+    tblBorders = OxmlElement("w:tblBorders")
+    for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        border = OxmlElement(f"w:{side}")
+        border.set(qn("w:val"), "none")
+        border.set(qn("w:sz"), "0")
+        border.set(qn("w:space"), "0")
+        border.set(qn("w:color"), "auto")
+        tblBorders.append(border)
+    tblPr.append(tblBorders)
+
+    # Set column widths via tblGrid
+    tblGrid = tbl.find(qn("w:tblGrid"))
+    if tblGrid is not None:
+        tbl.remove(tblGrid)
+    tblGrid = OxmlElement("w:tblGrid")
+    for ci in range(num_cols):
+        gridCol = OxmlElement("w:gridCol")
+        w = col_widths[ci] if ci < len(col_widths) else 5000
+        gridCol.set(qn("w:w"), str(w))
+        tblGrid.append(gridCol)
+    # Insert tblGrid right after tblPr
+    tblPr_idx = list(tbl).index(tblPr)
+    tbl.insert(tblPr_idx + 1, tblGrid)
+
+    # Set row heights and cell widths
     label_row_set = set(label_row_indices)
     label_col_set = set(label_col_indices)
 
     for ri, row in enumerate(table.rows):
+        tr = row._tr
+        # Set row height
+        if ri < len(all_row_heights) and all_row_heights[ri] is not None:
+            trPr = tr.find(qn("w:trPr"))
+            if trPr is None:
+                trPr = OxmlElement("w:trPr")
+                tr.insert(0, trPr)
+            trHeight = OxmlElement("w:trHeight")
+            trHeight.set(qn("w:val"), str(all_row_heights[ri]))
+            trHeight.set(qn("w:hRule"), "exact")
+            trPr.append(trHeight)
+
         for ci, cell in enumerate(row.cells):
             tc = cell._tc
-            # Remove ALL children except tcPr (cell dimensions/borders)
-            for child in list(tc):
-                if child.tag != qn("w:tcPr"):
-                    tc.remove(child)
-            # Add back a clean, empty paragraph with a pPr element
-            # so Word treats it as a proper editable paragraph.
-            p = OxmlElement("w:p")
-            p.append(OxmlElement("w:pPr"))
-            tc.append(p)
+            # Set cell width
+            tcPr = tc.find(qn("w:tcPr"))
+            if tcPr is None:
+                tcPr = OxmlElement("w:tcPr")
+                tc.insert(0, tcPr)
+            tcW = OxmlElement("w:tcW")
+            w = col_widths[ci] if ci < len(col_widths) else 5000
+            tcW.set(qn("w:w"), str(w))
+            tcW.set(qn("w:type"), "dxa")
+            tcPr.append(tcW)
 
-            # Only tweak alignment/margins on actual label cells
+            # Label cells: pin text to top, zero out top margin
             if ri in label_row_set and ci in label_col_set:
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-                tcPr = cell._tc.get_or_add_tcPr()
-                tcMar = tcPr.find(qn("w:tcMar"))
-                if tcMar is not None:
-                    top_el = tcMar.find(qn("w:top"))
-                    if top_el is not None:
-                        top_el.set(qn("w:w"), "0")
+                tcMar = OxmlElement("w:tcMar")
+                top_el = OxmlElement("w:top")
+                top_el.set(qn("w:w"), "0")
+                top_el.set(qn("w:type"), "dxa")
+                tcMar.append(top_el)
+                tcPr.append(tcMar)
 
-
-def _clone_table_with_page_break(doc, source_table):
-    """Deep-copy a table and append it after a page-break paragraph."""
-    # Page break
-    p_el = OxmlElement("w:p")
-    r_el = OxmlElement("w:r")
-    br_el = OxmlElement("w:br")
-    br_el.set(qn("w:type"), "page")
-    r_el.append(br_el)
-    p_el.append(r_el)
-    doc.element.body.append(p_el)
-
-    # Clone the table XML (preserves every dimension exactly)
-    new_tbl = deepcopy(source_table._tbl)
-    doc.element.body.append(new_tbl)
-
-    return Table(new_tbl, doc)
+    return table, label_row_indices, label_col_indices
 
 
 def _fill_page_cells(table, data_rows, row_cursor,
@@ -310,10 +390,9 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
              field_mapping=None):
     """Run the full label-generation pipeline.
 
-    Instead of building a document from scratch, this copies the original
-    Avery template so that every table dimension, margin, and positioning
-    property is preserved exactly.  Label cells are cleared and filled
-    with spreadsheet data.
+    Builds a new document from scratch using exact dimensions from the
+    Avery template profile.  This produces a clean, fully editable .docx
+    without any template-level baggage.
 
     Parameters
     ----------
@@ -370,36 +449,34 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
 
     print(f"Found {len(rows)} label(s) to print.")
 
-    # 3. Copy the Avery template to the output location.
-    #    This preserves every page margin, table dimension, cell size,
-    #    row height, and column width from the original template exactly.
-    template_path = AVERY_TEMPLATE_PATH
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(str(template_path), str(output_path))
+    # 3. Create a new document with the template's page dimensions
+    doc = Document()
+    page = profile.get("page", {})
+    section = doc.sections[0]
 
-    # 4. Open the copy and work with the template's own table
-    doc = Document(str(output_path))
+    if page.get("page_width_in"):
+        section.page_width = Inches(page["page_width_in"])
+    if page.get("page_height_in"):
+        section.page_height = Inches(page["page_height_in"])
+    if page.get("margin_top_in"):
+        section.top_margin = Inches(page["margin_top_in"])
+    if page.get("margin_bottom_in"):
+        section.bottom_margin = Inches(page["margin_bottom_in"])
+    if page.get("margin_left_in"):
+        section.left_margin = Inches(page["margin_left_in"])
+    if page.get("margin_right_in"):
+        section.right_margin = Inches(page["margin_right_in"])
 
-    # Remove any document protection / "mark as final" that the Avery
-    # template may carry — these make Word open the file as read-only.
-    _strip_document_protection(doc)
+    # Remove the default empty paragraph that Document() creates
+    body = doc.element.body
+    for p in body.findall(qn("w:p")):
+        body.remove(p)
 
-    if not doc.tables:
-        raise ValueError(
-            "Template has no tables — expected an Avery label grid."
-        )
-
-    base_table = doc.tables[0]
-
-    # Which physical rows/cols hold actual labels
-    label_row_indices = grid.get(
-        "label_row_indices", list(range(grid["num_rows"])))
-    label_col_indices = grid.get(
-        "label_col_indices", list(range(grid["num_cols"])))
-
-    # Cell width for the right-aligned tab stop calculation
+    # 4. Build pages with data
     cell_info = profile.get("cell", {})
     col_widths = cell_info.get("col_widths_twips", [])
+    label_col_indices = grid.get(
+        "label_col_indices", list(range(grid["num_cols"])))
     label_col_width = (
         col_widths[label_col_indices[0]]
         if col_widths and label_col_indices
@@ -408,75 +485,41 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
     )
     cell_margin_lr = cell_info.get("margin_left_twips") or 115
 
-    # Clear any sample content from the template's label cells
-    _clear_label_cells(base_table, label_row_indices, label_col_indices)
-
-    # 5. Fill pages with data
     total_pages = math.ceil(len(rows) / labels_per_page)
     row_cursor = 0
 
-    # First page — use the template's own table (exact dimensions)
-    row_cursor = _fill_page_cells(
-        base_table, rows, row_cursor,
-        label_row_indices, label_col_indices,
-        fmt["line_formats"], field_mapping,
-        label_col_width, cell_margin_lr,
-    )
+    for page_num in range(total_pages):
+        # Add a page break before every page except the first
+        if page_num > 0:
+            p_el = OxmlElement("w:p")
+            r_el = OxmlElement("w:r")
+            br_el = OxmlElement("w:br")
+            br_el.set(qn("w:type"), "page")
+            r_el.append(br_el)
+            p_el.append(r_el)
+            body.append(p_el)
 
-    # Additional pages — clone the template table
-    for _ in range(1, total_pages):
-        new_table = _clone_table_with_page_break(doc, base_table)
-        _clear_label_cells(new_table, label_row_indices, label_col_indices)
+        table, label_row_idx, label_col_idx = _build_page_table(doc, profile)
         row_cursor = _fill_page_cells(
-            new_table, rows, row_cursor,
-            label_row_indices, label_col_indices,
+            table, rows, row_cursor,
+            label_row_idx, label_col_idx,
             fmt["line_formats"], field_mapping,
             label_col_width, cell_margin_lr,
         )
 
-    # 6. Save the document
+    # 5. Save the document
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
     print(f"Saved {len(rows)} label(s) across {total_pages} page(s) "
           f"to {output_path}")
 
-    # 7. Clear the print flags so they don't print again
+    # 6. Clear the print flags so they don't print again
     clear_print_flags(spreadsheet_path, indices)
 
-    # 8. Open the document
+    # 7. Open the document
     _open_file(output_path)
 
     return output_path
-
-
-def _strip_document_protection(doc):
-    """Remove document protection, 'mark as final', and content edit restrictions.
-
-    Avery templates often ship with form protection or editing restrictions
-    that make Word open the generated document as read-only.
-    """
-    # 1. Remove w:documentProtection from settings
-    settings_el = doc.settings.element
-    for tag in ("w:documentProtection", "w:writeProtection"):
-        el = settings_el.find(qn(tag))
-        if el is not None:
-            settings_el.remove(el)
-
-    # 2. Remove "mark as final" custom property (docPropsCustom)
-    #    This is stored in the core/custom properties. python-docx doesn't
-    #    expose custom props directly, but the _MarkAsFinal flag lives in
-    #    the extended-properties or custom XML. We clear it via the core props.
-    try:
-        cp = doc.core_properties
-        # If marked as "read only recommended", clear it
-        # (python-docx doesn't expose this directly, but we can try)
-    except Exception:
-        pass
-
-    # 3. Remove any w:permStart / w:permEnd (editing permission ranges)
-    #    and content controls (w:sdt) at the body level
-    body = doc.element.body
-    for el in body.findall(qn("w:sdt")):
-        body.remove(el)
 
 
 def _open_file(path):
