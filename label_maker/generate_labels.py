@@ -233,6 +233,10 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
 def _clear_label_cells(table, label_row_indices, label_col_indices):
     """Remove all content from every cell in the table.
 
+    Uses aggressive XML-level clearing: removes ALL child elements from
+    each <w:tc> except <w:tcPr>, then adds back a single empty <w:p>.
+    This guarantees no template text survives.
+
     Vertical alignment is pinned to TOP and the top margin is zeroed
     only for actual label cells.
     """
@@ -241,12 +245,13 @@ def _clear_label_cells(table, label_row_indices, label_col_indices):
 
     for ri, row in enumerate(table.rows):
         for ci, cell in enumerate(row.cells):
-            # Remove extra paragraphs, keep only the first
-            for p in cell.paragraphs[1:]:
-                p._element.getparent().remove(p._element)
-            # Clear the remaining paragraph's content
-            if cell.paragraphs:
-                cell.paragraphs[0].clear()
+            tc = cell._tc
+            # Remove ALL child elements except tcPr
+            for child in list(tc):
+                if child.tag != qn("w:tcPr"):
+                    tc.remove(child)
+            # Add back one empty paragraph (Word requires at least one)
+            tc.append(OxmlElement("w:p"))
 
             # Only tweak alignment/margins on actual label cells
             if ri in label_row_set and ci in label_col_set:
