@@ -21,6 +21,7 @@ from docx.shared import Inches, Pt, Twips, RGBColor
 from label_maker.config import (
     AVERY_TEMPLATE_PATH,
     FIELD_MAPPING,
+    LABEL_LEFT_INDENT_PT,
     LINE_FORMAT_OVERRIDE,
     NUMBERS_SPREADSHEET_PATH,
 )
@@ -172,8 +173,10 @@ def _set_paragraph_spacing(paragraph, line_fmt):
     pf.space_before = Pt(sb) if sb else Pt(0)
     pf.space_after = Pt(sa) if sa else Pt(0)
 
-    # Left indent — pushes text past the colored tab area on the label
-    li = line_fmt.get("left_indent_pt")
+    # Left indent — pushes text past the colored tab area on the label.
+    # Use the template-detected indent if present, otherwise fall back
+    # to the configurable LABEL_LEFT_INDENT_PT (for the Avery color tab).
+    li = line_fmt.get("left_indent_pt") or LABEL_LEFT_INDENT_PT
     if li:
         pf.left_indent = Pt(li)
     fli = line_fmt.get("first_line_indent_pt")

@@ -130,8 +130,23 @@ def _extract_cell_dimensions(table):
                     height = int(val)
         row_heights.append(height)
 
-    # Cell margins — first from individual cell (w:tc/w:tcPr/w:tcMar)
+    # Cell margins — start with table-level defaults (w:tblPr/w:tblCellMar),
+    # then override with individual cell margins (w:tc/w:tcPr/w:tcMar).
     margins = {"top": None, "bottom": None, "left": None, "right": None}
+
+    # 1) Table-level default cell margins
+    tblPr = tbl.find(qn("w:tblPr"))
+    if tblPr is not None:
+        tblCellMar = tblPr.find(qn("w:tblCellMar"))
+        if tblCellMar is not None:
+            for side in ("top", "bottom", "left", "right"):
+                el = tblCellMar.find(qn(f"w:{side}"))
+                if el is not None:
+                    w = el.get(qn("w:w"))
+                    if w:
+                        margins[side] = int(w)
+
+    # 2) Individual cell margins override table-level
     first_row_trs = tbl.findall(qn("w:tr"))
     if first_row_trs:
         first_tcs = first_row_trs[0].findall(qn("w:tc"))
@@ -146,19 +161,6 @@ def _extract_cell_dimensions(table):
                             w = el.get(qn("w:w"))
                             if w:
                                 margins[side] = int(w)
-
-    # Fall back to table-level default cell margins (w:tblPr/w:tblCellMar)
-    if all(v is None for v in margins.values()):
-        tblPr = tbl.find(qn("w:tblPr"))
-        if tblPr is not None:
-            tblCellMar = tblPr.find(qn("w:tblCellMar"))
-            if tblCellMar is not None:
-                for side in ("top", "bottom", "left", "right"):
-                    el = tblCellMar.find(qn(f"w:{side}"))
-                    if el is not None:
-                        w = el.get(qn("w:w"))
-                        if w:
-                            margins[side] = int(w)
 
     return col_widths, row_heights, margins
 

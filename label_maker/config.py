@@ -34,3 +34,15 @@ LINE_FORMAT_OVERRIDE = {
     1: {"bold": True},     # Client + File Number — bold
     2: {"bold": False},    # Case — not bold
 }
+
+# ---------------------------------------------------------------------------
+# Left indent for the colored tab area on physical labels.
+#
+# Avery file folder labels have a colored strip on the left edge.
+# This indent (in points) pushes all text to the right so it prints
+# on the white area of the label, not over the colored tab.
+#
+# Set to 0 to disable.  Adjust the value if text overlaps or is too
+# far from the edge.  1 inch = 72 points.
+# ---------------------------------------------------------------------------
+LABEL_LEFT_INDENT_PT = 50   # ~0.69 inches — clears the Avery 5026 color tab
