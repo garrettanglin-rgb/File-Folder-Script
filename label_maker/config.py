@@ -4,7 +4,7 @@ from pathlib import Path
 NUMBERS_SPREADSHEET_PATH = Path("~/Desktop/Case List.numbers").expanduser()
 
 # Path to the existing Avery template Word document (Avery 5026)
-AVERY_TEMPLATE_PATH = Path("~/Desktop/File Folder Labels.docx").expanduser()
+AVERY_TEMPLATE_PATH = Path("~/Desktop/Avery5026ExtraLargeFileFolderLabels-2.docx").expanduser()
 
 # ---------------------------------------------------------------------------
 # Field mapping: which spreadsheet columns go on which label lines.
