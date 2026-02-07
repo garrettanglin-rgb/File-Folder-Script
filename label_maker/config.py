@@ -4,4 +4,4 @@ from pathlib import Path
 NUMBERS_SPREADSHEET_PATH = Path("/path/to/your/spreadsheet.numbers")
 
 # Path to the existing Avery template Word document
-AVERY_TEMPLATE_PATH = Path("/path/to/your/avery_template.docx")
+AVERY_TEMPLATE_PATH = Path("~/Desktop/LabelMaker/Template.docx").expanduser()
