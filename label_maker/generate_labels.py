@@ -507,28 +507,34 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
             label_col_width, cell_margin_lr,
         )
 
-    # 5. Shrink the trailing paragraph Word adds after the last table
-    #    so it doesn't push a blank second page.
-    trailing_paras = body.findall(qn("w:p"))
-    if trailing_paras:
-        last_p = trailing_paras[-1]
-        pPr = last_p.find(qn("w:pPr"))
-        if pPr is None:
-            pPr = OxmlElement("w:pPr")
-            last_p.insert(0, pPr)
-        # Tiny font size (1 half-point = 0.5pt)
-        rPr = OxmlElement("w:rPr")
-        sz = OxmlElement("w:sz")
-        sz.set(qn("w:val"), "1")
-        rPr.append(sz)
-        pPr.append(rPr)
-        # Zero spacing
-        spacing = OxmlElement("w:spacing")
-        spacing.set(qn("w:before"), "0")
-        spacing.set(qn("w:after"), "0")
-        spacing.set(qn("w:line"), "1")
-        spacing.set(qn("w:lineRule"), "exact")
-        pPr.append(spacing)
+    # 5. Word requires a paragraph after every table.  Without one it
+    #    auto-creates a default-sized paragraph that pushes to a blank
+    #    second page.  Insert a near-invisible one before the sectPr.
+    trailing_p = OxmlElement("w:p")
+    trailing_pPr = OxmlElement("w:pPr")
+    # Tiny font so the paragraph mark takes virtually no space
+    rPr = OxmlElement("w:rPr")
+    sz = OxmlElement("w:sz")
+    sz.set(qn("w:val"), "2")          # 1pt font
+    szCs = OxmlElement("w:szCs")
+    szCs.set(qn("w:val"), "2")
+    rPr.append(sz)
+    rPr.append(szCs)
+    trailing_pPr.append(rPr)
+    # Zero spacing, minimal line height
+    spacing = OxmlElement("w:spacing")
+    spacing.set(qn("w:before"), "0")
+    spacing.set(qn("w:after"), "0")
+    spacing.set(qn("w:line"), "20")   # 1pt line height
+    spacing.set(qn("w:lineRule"), "exact")
+    trailing_pPr.append(spacing)
+    trailing_p.append(trailing_pPr)
+    # Insert before sectPr so it sits right after the last table
+    sect_pr = body.find(qn("w:sectPr"))
+    if sect_pr is not None:
+        sect_pr.addprevious(trailing_p)
+    else:
+        body.append(trailing_p)
 
     # 6. Save the document
     output_path.parent.mkdir(parents=True, exist_ok=True)
