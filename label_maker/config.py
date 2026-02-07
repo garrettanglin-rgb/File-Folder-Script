@@ -19,5 +19,5 @@ AVERY_TEMPLATE_PATH = Path("~/Desktop/File Folder Labels.docx").expanduser()
 FIELD_MAPPING = {
     1: ("Client", "File Number"),  # Left: Client, Right: File Number
     2: "Case",                     # Column D — full line
-    3: "Phone/Email",              # Column E — full line
+    3: "Phone/Email:",             # Column E — full line
 }
