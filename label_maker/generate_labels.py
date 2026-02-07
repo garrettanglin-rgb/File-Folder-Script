@@ -23,6 +23,7 @@ from label_maker.config import (
     FIELD_MAPPING,
     LABEL_LEFT_INDENT_PT,
     LINE_FORMAT_OVERRIDE,
+    LINE_MAX_CHARS,
     NUMBERS_SPREADSHEET_PATH,
 )
 from label_maker.data_reader import clear_print_flags, read_flagged_rows
@@ -252,6 +253,14 @@ def _apply_line_pair(paragraph, line_fmt, left_text, right_text,
     _format_run(run_right, line_fmt)
 
 
+def _truncate(text, max_chars):
+    """Truncate text to max_chars, adding '...' if shortened."""
+    text = str(text) if text is not None else ""
+    if max_chars and len(text) > max_chars:
+        return text[:max_chars - 3].rstrip() + "..."
+    return text
+
+
 def _get_all_mapped_columns(field_mapping):
     """Return a flat set of every column name referenced in FIELD_MAPPING."""
     cols = set()
@@ -294,17 +303,23 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
 
         para = cell.paragraphs[0] if li == 0 else cell.add_paragraph()
 
+        # Truncate if a max character limit is set for this line
+        max_chars = LINE_MAX_CHARS.get(line_num)
+
         if isinstance(columns, tuple):
             left_col, right_col = columns
             _apply_line_pair(
                 para, fmt,
-                data_row.get(left_col, ""),
-                data_row.get(right_col, ""),
+                _truncate(data_row.get(left_col, ""), max_chars),
+                _truncate(data_row.get(right_col, ""), max_chars),
                 cell_width_twips,
                 cell_margin_lr_twips,
             )
         else:
-            _apply_line_single(para, fmt, data_row.get(columns, ""))
+            _apply_line_single(
+                para, fmt,
+                _truncate(data_row.get(columns, ""), max_chars),
+            )
 
 
 def _build_page_table(doc, profile, section):

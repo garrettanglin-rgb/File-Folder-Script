@@ -46,3 +46,15 @@ LINE_FORMAT_OVERRIDE = {
 # far from the edge.  1 inch = 72 points.
 # ---------------------------------------------------------------------------
 LABEL_LEFT_INDENT_PT = 36   # 0.5 inches — clears the Avery 5026 color tab
+
+# ---------------------------------------------------------------------------
+# Maximum characters per label line.
+#
+# Long values (e.g. case names) can wrap to the next line and push other
+# fields down.  Set a character limit per line number to truncate with "…".
+# Only lines listed here are truncated; omitted lines have no limit.
+# Set to None or 0 to disable for a specific line.
+# ---------------------------------------------------------------------------
+LINE_MAX_CHARS = {
+    2: 40,   # Case — keep on one line
+}
