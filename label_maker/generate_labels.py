@@ -257,11 +257,23 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
     *field_mapping* values may be a string (single column → full line)
     or a tuple of two strings (left column, right column on one line).
     """
+    # Fallback format if the template had no detectable line styles
+    _DEFAULT_FMT = {
+        "font_name": "Arial", "font_size_pt": 10.0,
+        "bold": False, "italic": False, "underline": False,
+        "alignment": "left", "line_spacing_rule": "single",
+        "line_spacing_value": 1.0, "space_before_pt": 0.0,
+        "space_after_pt": 0.0, "color_rgb": None,
+    }
+
     sorted_lines = sorted(field_mapping.items())
 
     for li, (line_num, columns) in enumerate(sorted_lines):
-        fmt_index = min(li, len(line_formats) - 1)
-        fmt = line_formats[fmt_index]
+        if line_formats:
+            fmt_index = min(li, len(line_formats) - 1)
+            fmt = line_formats[fmt_index]
+        else:
+            fmt = _DEFAULT_FMT
 
         para = cell.paragraphs[0] if li == 0 else cell.add_paragraph()
 

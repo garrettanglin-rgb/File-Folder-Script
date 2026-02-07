@@ -79,8 +79,21 @@ def _analyze_paragraph(para):
     # nothing is lost.
     runs = [_analyze_run(r) for r in para.runs]
 
-    # Derive dominant / first-run formatting for convenience
-    first = runs[0] if runs else {}
+    # Derive dominant / first-run formatting for convenience.
+    # If the paragraph has no runs (blank template cell), pull font
+    # defaults from the paragraph's style instead.
+    if runs:
+        first = runs[0]
+    else:
+        style_font = para.style.font if para.style else None
+        first = {
+            "font_name": style_font.name if style_font and style_font.name else None,
+            "font_size_pt": _emu_to_pt(style_font.size) if style_font and style_font.size else None,
+            "bold": bool(style_font.bold) if style_font and style_font.bold is not None else False,
+            "italic": bool(style_font.italic) if style_font and style_font.italic is not None else False,
+            "underline": bool(style_font.underline) if style_font and style_font.underline is not None else False,
+            "color_rgb": str(style_font.color.rgb) if style_font and style_font.color and style_font.color.rgb else None,
+        }
 
     return {
         "text": para.text,
@@ -100,14 +113,21 @@ def _analyze_paragraph(para):
 
 
 def _analyze_cell(cell):
-    """Analyze all paragraphs (lines) inside a single label cell."""
+    """Analyze all paragraphs (lines) inside a single label cell.
+
+    If the cell has text, only paragraphs with visible text are kept.
+    If the cell is blank (clean template), *all* paragraphs are analyzed
+    so we still capture font/size/alignment from the empty runs.
+    """
     paragraphs = cell.paragraphs
-    # Skip cells that are completely empty (no visible text)
-    lines = [_analyze_paragraph(p) for p in paragraphs if p.text.strip()]
-    return {
-        "num_lines": len(lines),
-        "lines": lines,
-    }
+    # Prefer paragraphs with text, but fall back to all paragraphs
+    lines_with_text = [_analyze_paragraph(p) for p in paragraphs if p.text.strip()]
+    if lines_with_text:
+        return {"num_lines": len(lines_with_text), "lines": lines_with_text}
+
+    # Blank cell — analyze every paragraph for its formatting
+    all_lines = [_analyze_paragraph(p) for p in paragraphs]
+    return {"num_lines": len(all_lines), "lines": all_lines}
 
 
 def analyze_template(docx_path):
