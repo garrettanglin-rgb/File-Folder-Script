@@ -235,6 +235,15 @@ def _clear_label_cells(table, label_row_indices, label_col_indices):
     for ri in label_row_indices:
         for ci in label_col_indices:
             cell = table.rows[ri].cells[ci]
+            # Pin text to the top of the cell (removes vertical centering gap)
+            cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+            # Zero out any internal cell top margin via XML
+            tcPr = cell._tc.get_or_add_tcPr()
+            tcMar = tcPr.find(qn("w:tcMar"))
+            if tcMar is not None:
+                top_el = tcMar.find(qn("w:top"))
+                if top_el is not None:
+                    top_el.set(qn("w:w"), "0")
             # Remove extra paragraphs, keep only the first
             for p in cell.paragraphs[1:]:
                 p._element.getparent().remove(p._element)
