@@ -21,3 +21,16 @@ FIELD_MAPPING = {
     2: "Case",                     # Column D — full line
     3: "Phone/Email:",             # Column E — full line
 }
+
+# ---------------------------------------------------------------------------
+# Formatting overrides per label line.
+#
+# Use this to override any formatting detected from the template.
+# Keys are line numbers (matching FIELD_MAPPING).
+# Values are dicts with any of: bold, italic, underline, font_name, font_size_pt
+# Only properties listed here are overridden; everything else comes from the template.
+# ---------------------------------------------------------------------------
+LINE_FORMAT_OVERRIDE = {
+    1: {"bold": True},     # Client + File Number — bold
+    2: {"bold": False},    # Case — not bold
+}

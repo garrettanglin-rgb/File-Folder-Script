@@ -21,6 +21,7 @@ from docx.shared import Inches, Pt, Twips, RGBColor
 from label_maker.config import (
     AVERY_TEMPLATE_PATH,
     FIELD_MAPPING,
+    LINE_FORMAT_OVERRIDE,
     NUMBERS_SPREADSHEET_PATH,
 )
 from label_maker.data_reader import clear_print_flags, read_flagged_rows
@@ -156,7 +157,7 @@ def _set_grid_cols(table, col_widths_twips):
 # ---------------------------------------------------------------------------
 
 def _set_paragraph_spacing(paragraph, line_fmt):
-    """Apply paragraph-level spacing properties from a line format dict."""
+    """Apply paragraph-level spacing and indent properties."""
     pf = paragraph.paragraph_format
     rule = _SPACING_RULE_MAP.get(line_fmt["line_spacing_rule"],
                                  WD_LINE_SPACING.SINGLE)
@@ -171,14 +172,23 @@ def _set_paragraph_spacing(paragraph, line_fmt):
     pf.space_before = Pt(sb) if sb else Pt(0)
     pf.space_after = Pt(sa) if sa else Pt(0)
 
+    # Left indent — pushes text past the colored tab area on the label
+    li = line_fmt.get("left_indent_pt")
+    if li:
+        pf.left_indent = Pt(li)
+    fli = line_fmt.get("first_line_indent_pt")
+    if fli:
+        pf.first_line_indent = Pt(fli)
+
 
 def _format_run(run, line_fmt):
     """Apply run-level font properties from a line format dict."""
     font = run.font
-    if line_fmt.get("font_name"):
-        font.name = line_fmt["font_name"]
-    if line_fmt.get("font_size_pt"):
-        font.size = Pt(line_fmt["font_size_pt"])
+    # Always set font name — fall back to Times New Roman if not detected
+    font.name = line_fmt.get("font_name") or "Times New Roman"
+    # Always set font size — fall back to 12pt if not detected
+    size = line_fmt.get("font_size_pt")
+    font.size = Pt(size) if size else Pt(12)
     font.bold = line_fmt.get("bold", False)
     font.italic = line_fmt.get("italic", False)
     font.underline = line_fmt.get("underline", False)
@@ -271,9 +281,13 @@ def _populate_cell(cell, data_row, line_formats, field_mapping,
     for li, (line_num, columns) in enumerate(sorted_lines):
         if line_formats:
             fmt_index = min(li, len(line_formats) - 1)
-            fmt = line_formats[fmt_index]
+            fmt = dict(line_formats[fmt_index])  # copy so we can override
         else:
-            fmt = _DEFAULT_FMT
+            fmt = dict(_DEFAULT_FMT)
+
+        # Apply per-line formatting overrides from config
+        overrides = LINE_FORMAT_OVERRIDE.get(line_num, {})
+        fmt.update(overrides)
 
         para = cell.paragraphs[0] if li == 0 else cell.add_paragraph()
 

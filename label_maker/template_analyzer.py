@@ -331,6 +331,8 @@ def _analyze_paragraph(para, doc_defaults):
         "line_spacing_value": line_spacing_value,
         "space_before_pt": _emu_to_pt(pf.space_before),
         "space_after_pt": _emu_to_pt(pf.space_after),
+        "left_indent_pt": _emu_to_pt(pf.left_indent),
+        "first_line_indent_pt": _emu_to_pt(pf.first_line_indent),
         "font_name": first.get("font_name"),
         "font_size_pt": first.get("font_size_pt"),
         "bold": first.get("bold", False),
@@ -465,6 +467,8 @@ def analyze_template(docx_path):
             "line_spacing_value": line["line_spacing_value"],
             "space_before_pt": line["space_before_pt"],
             "space_after_pt": line["space_after_pt"],
+            "left_indent_pt": line.get("left_indent_pt"),
+            "first_line_indent_pt": line.get("first_line_indent_pt"),
             "color_rgb": line["color_rgb"],
         })
 
@@ -570,7 +574,10 @@ if __name__ == "__main__":
         if lf["underline"]:
             style_parts.append("Underline")
         style_str = "+".join(style_parts) if style_parts else "Regular"
+        indent = lf.get('left_indent_pt')
+        indent_str = f", indent={indent}pt" if indent else ""
         print(f"  Line {i + 1}: {lf['font_name']} {lf['font_size_pt']}pt, "
-              f"{style_str}, {lf['alignment']}, spacing={lf['line_spacing_value']}")
+              f"{style_str}, {lf['alignment']}, spacing={lf['line_spacing_value']}"
+              f"{indent_str}")
 
     save_profile(profile, output_file)
