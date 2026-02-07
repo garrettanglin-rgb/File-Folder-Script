@@ -9,16 +9,15 @@ AVERY_TEMPLATE_PATH = Path("~/Desktop/File Folder Labels.docx").expanduser()
 # ---------------------------------------------------------------------------
 # Field mapping: which spreadsheet columns go on which label lines.
 #
-# Each entry maps a label line number (1-based) to a column header name
-# that must match your spreadsheet exactly.  Only the columns listed here
-# will appear on the label — everything else is ignored.
+# Each entry maps a label line number (1-based) to either:
+#   - A single column name (string)  → that column fills the whole line
+#   - A tuple of two column names    → first on the left, second on the right
 #
-# The line number also determines which formatting from the template
-# profile is applied (line 1 gets the first line's font/size/bold, etc.).
+# Column names must match your spreadsheet headers exactly.
+# The line number determines which template formatting is applied.
 # ---------------------------------------------------------------------------
 FIELD_MAPPING = {
-    1: "File Number",   # Column B — label line 1
-    2: "Client",        # Column C — label line 2
-    3: "Case",          # Column D — label line 3
-    4: "Email/Phone",   # Column E — label line 4
+    1: ("Client", "File Number"),  # Left: Client, Right: File Number
+    2: "Case",                     # Column D — full line
+    3: "Phone/Email",              # Column E — full line
 }

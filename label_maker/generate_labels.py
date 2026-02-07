@@ -155,13 +155,9 @@ def _set_grid_cols(table, col_widths_twips):
 # Core document-building logic
 # ---------------------------------------------------------------------------
 
-def _apply_line_format(paragraph, line_fmt, text):
-    """Apply a line_format dict to a paragraph, inserting *text*."""
-    paragraph.alignment = _ALIGN_MAP.get(line_fmt["alignment"],
-                                         WD_ALIGN_PARAGRAPH.LEFT)
+def _set_paragraph_spacing(paragraph, line_fmt):
+    """Apply paragraph-level spacing properties from a line format dict."""
     pf = paragraph.paragraph_format
-
-    # Line spacing
     rule = _SPACING_RULE_MAP.get(line_fmt["line_spacing_rule"],
                                  WD_LINE_SPACING.SINGLE)
     pf.line_spacing_rule = rule
@@ -170,14 +166,14 @@ def _apply_line_format(paragraph, line_fmt, text):
     else:
         pf.line_spacing = line_fmt["line_spacing_value"]
 
-    # Paragraph spacing
     sb = line_fmt.get("space_before_pt")
     sa = line_fmt.get("space_after_pt")
     pf.space_before = Pt(sb) if sb else Pt(0)
     pf.space_after = Pt(sa) if sa else Pt(0)
 
-    # Run-level formatting
-    run = paragraph.add_run(str(text) if text is not None else "")
+
+def _format_run(run, line_fmt):
+    """Apply run-level font properties from a line format dict."""
     font = run.font
     if line_fmt.get("font_name"):
         font.name = line_fmt["font_name"]
@@ -190,32 +186,96 @@ def _apply_line_format(paragraph, line_fmt, text):
         font.color.rgb = RGBColor.from_string(line_fmt["color_rgb"])
 
 
-def _populate_cell(cell, data_row, line_formats, field_mapping):
+def _add_right_tab_stop(paragraph, position_twips):
+    """Add a right-aligned tab stop to a paragraph via XML."""
+    pPr = paragraph._p.get_or_add_pPr()
+    tabs = pPr.find(qn("w:tabs"))
+    if tabs is None:
+        tabs = OxmlElement("w:tabs")
+        pPr.append(tabs)
+    tab = OxmlElement("w:tab")
+    tab.set(qn("w:val"), "right")
+    tab.set(qn("w:pos"), str(position_twips))
+    tab.set(qn("w:leader"), "none")
+    tabs.append(tab)
+
+
+def _apply_line_single(paragraph, line_fmt, text):
+    """Fill a paragraph with a single column value."""
+    paragraph.alignment = _ALIGN_MAP.get(line_fmt["alignment"],
+                                         WD_ALIGN_PARAGRAPH.LEFT)
+    _set_paragraph_spacing(paragraph, line_fmt)
+    run = paragraph.add_run(str(text) if text is not None else "")
+    _format_run(run, line_fmt)
+
+
+def _apply_line_pair(paragraph, line_fmt, left_text, right_text,
+                     cell_width_twips, cell_margin_lr_twips):
+    """Fill a paragraph with two values: left-aligned and right-aligned.
+
+    Uses a right-aligned tab stop so the second value sits flush-right
+    inside the cell.
+    """
+    # Override to left-align so the tab stop layout works correctly
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _set_paragraph_spacing(paragraph, line_fmt)
+
+    # Tab stop position = cell content width (cell width minus L+R margins)
+    tab_pos = cell_width_twips - (2 * cell_margin_lr_twips)
+    _add_right_tab_stop(paragraph, tab_pos)
+
+    # Left run
+    run_left = paragraph.add_run(
+        str(left_text) if left_text is not None else "")
+    _format_run(run_left, line_fmt)
+
+    # Tab character
+    run_tab = paragraph.add_run("\t")
+    _format_run(run_tab, line_fmt)
+
+    # Right run
+    run_right = paragraph.add_run(
+        str(right_text) if right_text is not None else "")
+    _format_run(run_right, line_fmt)
+
+
+def _get_all_mapped_columns(field_mapping):
+    """Return a flat set of every column name referenced in FIELD_MAPPING."""
+    cols = set()
+    for value in field_mapping.values():
+        if isinstance(value, tuple):
+            cols.update(value)
+        else:
+            cols.add(value)
+    return cols
+
+
+def _populate_cell(cell, data_row, line_formats, field_mapping,
+                   cell_width_twips, cell_margin_lr_twips):
     """Fill a single table cell with label data using the format profile.
 
-    *data_row* is a dict keyed by header name.  *field_mapping* is an
-    ordered dict mapping 1-based line numbers to spreadsheet column
-    names (from ``config.FIELD_MAPPING``).  *line_formats* comes from
-    the profile's ``format_template.line_formats``.
-
-    Each mapped line gets the formatting of the corresponding template
-    line.  If the template has fewer line_formats than the mapping, the
-    last available format is reused.
+    *field_mapping* values may be a string (single column → full line)
+    or a tuple of two strings (left column, right column on one line).
     """
-    sorted_lines = sorted(field_mapping.items())  # [(1, "File Number"), ...]
+    sorted_lines = sorted(field_mapping.items())
 
-    for li, (line_num, column_name) in enumerate(sorted_lines):
-        text = data_row.get(column_name, "")
-        # Pick the matching template line format; fall back to the last
-        # one if the mapping has more lines than the template defined.
+    for li, (line_num, columns) in enumerate(sorted_lines):
         fmt_index = min(li, len(line_formats) - 1)
         fmt = line_formats[fmt_index]
 
-        if li == 0:
-            para = cell.paragraphs[0]
+        para = cell.paragraphs[0] if li == 0 else cell.add_paragraph()
+
+        if isinstance(columns, tuple):
+            left_col, right_col = columns
+            _apply_line_pair(
+                para, fmt,
+                data_row.get(left_col, ""),
+                data_row.get(right_col, ""),
+                cell_width_twips,
+                cell_margin_lr_twips,
+            )
         else:
-            para = cell.add_paragraph()
-        _apply_line_format(para, fmt, text)
+            _apply_line_single(para, fmt, data_row.get(columns, ""))
 
 
 def _build_page_table(doc, profile, section):
@@ -232,12 +292,18 @@ def _build_page_table(doc, profile, section):
     _center_table(table)
 
     # Column widths from the original template (twips / "dxa")
-    col_width = 5126  # from template gridCol
+    col_width = profile.get("cell", {}).get("col_width_twips", 5126)
     _set_grid_cols(table, [col_width] * num_cols)
 
     # Row heights + cell properties
-    row_height = 1915  # from template trHeight
-    cell_margins = {"top": 86, "bottom": 86, "left": 144, "right": 144}
+    row_height = profile.get("cell", {}).get("row_height_twips", 1915)
+    cell_margin_lr = profile.get("cell", {}).get("margin_left_twips", 144)
+    cell_margins = {
+        "top": profile.get("cell", {}).get("margin_top_twips", 86),
+        "bottom": profile.get("cell", {}).get("margin_bottom_twips", 86),
+        "left": cell_margin_lr,
+        "right": profile.get("cell", {}).get("margin_right_twips", 144),
+    }
 
     for ri, row in enumerate(table.rows):
         _set_row_height(row, row_height)
@@ -246,7 +312,7 @@ def _build_page_table(doc, profile, section):
             _set_cell_margins(cell, **cell_margins)
             _set_cell_width(cell, col_width)
 
-    return table
+    return table, col_width, cell_margin_lr
 
 
 def generate(profile_path=None, spreadsheet_path=None, output_path=None,
@@ -292,7 +358,7 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
         return None
 
     # Validate that every mapped column exists in the spreadsheet
-    mapped_cols = set(field_mapping.values())
+    mapped_cols = _get_all_mapped_columns(field_mapping)
     missing = mapped_cols - set(headers)
     if missing:
         raise ValueError(
@@ -337,7 +403,8 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
         else:
             current_section = section
 
-        table = _build_page_table(doc, profile, current_section)
+        table, col_width, cell_margin_lr = _build_page_table(
+            doc, profile, current_section)
 
         # Fill cells with data
         for ri in range(grid["num_rows"]):
@@ -348,6 +415,8 @@ def generate(profile_path=None, spreadsheet_path=None, output_path=None,
                         rows[row_cursor],
                         fmt["line_formats"],
                         field_mapping,
+                        col_width,
+                        cell_margin_lr,
                     )
                     row_cursor += 1
                 # else: cell stays empty (blank label)
