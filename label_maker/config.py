@@ -46,7 +46,7 @@ LINE_FORMAT_OVERRIDE = {
 # Set to 0 to disable.  Adjust the value if text overlaps or is too
 # far from the edge.  1 inch = 72 points.
 # ---------------------------------------------------------------------------
-LABEL_LEFT_INDENT_PT = 32   # ~0.44 inches — clears the Avery 5026 color tab
+LABEL_LEFT_INDENT_PT = 28   # ~0.39 inches — clears the Avery 5026 color tab
 
 # ---------------------------------------------------------------------------
 # Maximum characters per label line.
