@@ -143,8 +143,10 @@ def _apply_line_pair(paragraph, line_fmt, left_text, right_text,
     paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_paragraph_spacing(paragraph, line_fmt)
 
-    # Tab stop position = cell content width (cell width minus L+R margins)
-    tab_pos = cell_width_twips - (2 * cell_margin_lr_twips)
+    # Tab stop position = cell content width minus the left indent,
+    # so the right-aligned text doesn't go past the label edge.
+    indent_twips = int((LABEL_LEFT_INDENT_PT or 0) * 20)  # 1pt = 20 twips
+    tab_pos = cell_width_twips - (2 * cell_margin_lr_twips) - indent_twips
     _add_right_tab_stop(paragraph, tab_pos)
 
     # Left run
