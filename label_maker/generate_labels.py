@@ -78,9 +78,8 @@ def _set_paragraph_spacing(paragraph, line_fmt):
     pf.space_after = Pt(sa) if sa else Pt(0)
 
     # Left indent — pushes text past the colored tab area on the label.
-    # Use the template-detected indent if present, otherwise fall back
-    # to the configurable LABEL_LEFT_INDENT_PT (for the Avery color tab).
-    li = line_fmt.get("left_indent_pt") or LABEL_LEFT_INDENT_PT
+    # Config value always wins; fall back to template-detected indent.
+    li = LABEL_LEFT_INDENT_PT or line_fmt.get("left_indent_pt")
     if li:
         pf.left_indent = Pt(li)
     fli = line_fmt.get("first_line_indent_pt")
